@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Georgetown Pulse Topology - 3D Bulb Cloud</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #ccc; font-family: 'Courier New', monospace; overflow: hidden; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    display: flex; flex-direction: column; gap: 8px; max-width: 280px;
+  }
+  #ui label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+  #ui select, #ui input[type=range] { background: #111; border: 1px solid #333; color: #ccc;
+    padding: 4px 8px; font-family: inherit; font-size: 12px; cursor: pointer; width: 100%; }
+  #ui .hint { font-size: 10px; color: #555; line-height: 1.4; }
+  #tooltip {
+    position: fixed; z-index: 20; pointer-events: none;
+    background: rgba(0,0,0,0.85); border: 1px solid #333;
+    padding: 8px 12px; font-size: 11px; line-height: 1.7;
+    color: #eee; display: none; white-space: pre;
+  }
+  #legend {
+    position: fixed; top: 16px; right: 16px; z-index: 10;
+    font-size: 11px; color: #666; line-height: 2; max-width: 260px;
+  }
+  .legend-row { display: flex; align-items: center; gap: 8px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  #err { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    background: #220000; border: 1px solid #633; padding: 20px; color: #faa; max-width: 90vw; display: none; z-index: 100; white-space: pre-wrap; }
+  code { font-family: inherit; color: #888; }
+  .dim-label {
+    background: rgba(0,0,0,0.75);
+    border: 1px solid #556;
+    border-radius: 3px;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-family: 'Courier New', monospace;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .dim-label.drop  { color: #88ddff; border-color: #88ddff55; }
+  .dim-label.height{ color: #aaff66; border-color: #aaff6655; }
+  .dim-label.cable { color: #ffffff; border-color: #ffffff44; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<div id="err"></div>
+
+<div id="ui">
+  <div>
+    <label>Color by</label><br>
+    <select id="colorMode">
+      <option value="depth">Bulb height (topology)</option>
+      <option value="drop">Drop length (cable to bulb)</option>
+      <option value="cable">Total cable length</option>
+      <option value="universe">Universe</option>
+      <option value="line">Line (row)</option>
+    </select>
+  </div>
+  <div>
+    <label>Point size</label><br>
+    <input type="range" id="ptSize" min="1" max="14" value="5" step="0.5">
+  </div>
+  <div>
+    <label>Drop line opacity</label><br>
+    <input type="range" id="lineOp" min="0" max="100" value="35" step="5">
+  </div>
+  <div class="hint">
+    <b>Pulse Topology</b> — hanging bulbs.<br>
+    Each bulb drops <code>BulbCables</code> m below its ceiling mount.<br>
+    Bulb height = <code>position_z + BulbZ</code>.
+  </div>
+</div>
+
+<div id="legend"></div>
+<div id="tooltip"></div>
+
+<div id="info" style="position:fixed;bottom:16px;left:16px;z-index:10;font-size:11px;color:#555;line-height:1.6;max-width:560px;">
+  Drag orbit &middot; Scroll zoom &middot; Right-drag pan &middot; Hover bulb<br>
+  <span style="color:#444">Serve with a static server &middot; Data source: <code id="srcName">001-june30.csv</code></span>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+// Data source — override with ?csv=filename.csv in the URL
+const params = new URLSearchParams(location.search);
+const CSV_FILE = params.get('csv') || '001-june30.csv';
+document.getElementById('srcName').textContent = CSV_FILE;
+
+const errEl = document.getElementById('err');
+function showErr(msg) { errEl.style.display = 'block'; errEl.textContent = msg; }
+
+// ── Load + parse CSV ─────────────────────────────────────────────────────────
+function parseCSV(text) {
+  const lines = text.replace(/\r/g, '').split('\n').filter(l => l.trim().length);
+  const header = lines[0].split(',').map(h => h.trim());
+  const idx = {};
+  header.forEach((h, i) => idx[h] = i);
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    const c = lines[i].split(',');
+    const num = k => parseFloat(c[idx[k]]);
+    const int = k => parseInt(c[idx[k]], 10);
+    out.push({
+      id: int('ID'),
+      index: int('index'),
+      px: num('position_x'),       // ceiling mount X
+      py: num('position_y'),       // ceiling mount Y (room depth)
+      pz: num('position_z'),       // ceiling height
+      pitchx: num('pitchx'),
+      pitchy: num('pitchy'),
+      cable: num('cablelength(M)'),// total cable length (wiring)
+      drop: num('BulbCables'),     // length the bulb hangs below ceiling
+      bulbZ: num('BulbZ'),         // vertical offset of bulb (negative)
+      line: int('lineid'),
+      universe: int('Universe'),
+    });
+  }
+  return out;
+}
+
+let RAW = [];
+try {
+  const res = await fetch(CSV_FILE);
+  if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+  RAW = parseCSV(await res.text());
+  if (!RAW.length) throw new Error('No rows parsed.');
+} catch (e) {
+  showErr('Could not load ' + CSV_FILE + '.\n\n' + e.message +
+    '\n\nServe this folder with a static server, e.g.\n  python3 -m http.server');
+  throw e;
+}
+
+// ── Scene coordinate mapping (Y up) ──────────────────────────────────────────
+//   scene.x = px,  scene.y = height,  scene.z = py
+//   ceiling at y = pz,  bulb at y = pz + bulbZ
+const bulbY = d => d.pz + d.bulbZ;
+const ceilY = d => d.pz;
+
+const pxs = RAW.map(d => d.px), pys = RAW.map(d => d.py);
+const minPx = Math.min(...pxs), maxPx = Math.max(...pxs);
+const minPy = Math.min(...pys), maxPy = Math.max(...pys);
+const bys = RAW.map(bulbY);
+const minBulbY = Math.min(...bys), maxBulbY = Math.max(...bys);
+const drops = RAW.map(d => d.drop);
+const minDrop = Math.min(...drops), maxDrop = Math.max(...drops);
+const cables = RAW.map(d => d.cable);
+const minCable = Math.min(...cables), maxCable = Math.max(...cables);
+const universes = [...new Set(RAW.map(d => d.universe))].sort((a, b) => a - b);
+const lines = [...new Set(RAW.map(d => d.line))].sort((a, b) => a - b);
+const cx = (minPx + maxPx) / 2, cz = (minPy + maxPy) / 2;
+const cyMid = (minBulbY + maxBulbY) / 2;
+
+// ── Renderers ────────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x0a0a0f);
+document.body.appendChild(renderer.domElement);
+
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(innerWidth, innerHeight);
+labelRenderer.domElement.style.position = 'fixed';
+labelRenderer.domElement.style.top = '0';
+labelRenderer.domElement.style.left = '0';
+labelRenderer.domElement.style.pointerEvents = 'none';
+document.body.appendChild(labelRenderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x0a0a0f, 0.012);
+
+const span = Math.max(maxPx - minPx, maxPy - minPy);
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 1000);
+camera.position.set(cx - span * 0.7, maxBulbY + span * 0.45, cz - span * 0.9);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.target.set(cx, cyMid, cz);
+controls.update();
+
+// ── Color helpers ─────────────────────────────────────────────────────────────
+function lerpColor(t) { return new THREE.Color().setHSL(0.6 - t * 0.6, 0.95, 0.55); }
+function categColor(i, n) { return new THREE.Color().setHSL((i / Math.max(1, n)) % 1, 0.85, 0.55); }
+
+function pointColor(d, mode) {
+  if (mode === 'depth') return lerpColor((bulbY(d) - minBulbY) / (maxBulbY - minBulbY || 1));
+  if (mode === 'drop')  return lerpColor((d.drop - minDrop) / (maxDrop - minDrop || 1));
+  if (mode === 'cable') return lerpColor((d.cable - minCable) / (maxCable - minCable || 1));
+  if (mode === 'universe') return categColor(universes.indexOf(d.universe), universes.length);
+  return categColor(lines.indexOf(d.line), lines.length);
+}
+
+let colorMode = 'depth';
+
+// ── Geometry ──────────────────────────────────────────────────────────────────
+const ptGeo = new THREE.BufferGeometry();
+const ptMat = new THREE.PointsMaterial({
+  size: parseFloat(document.getElementById('ptSize').value) * 0.02,
+  vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 1.0
+});
+const pointCloud = new THREE.Points(ptGeo, ptMat);
+scene.add(pointCloud);
+
+const lineGeo = new THREE.BufferGeometry();
+const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.35 });
+const dropLines = new THREE.LineSegments(lineGeo, lineMat);
+scene.add(dropLines);
+
+const n = RAW.length;
+function rebuild() {
+  const pos = new Float32Array(n * 3);
+  const col = new Float32Array(n * 3);
+  const lpos = new Float32Array(n * 6);
+  const lcol = new Float32Array(n * 6);
+  for (let i = 0; i < n; i++) {
+    const d = RAW[i];
+    const by = bulbY(d), cyy = ceilY(d);
+    pos[i*3] = d.px; pos[i*3+1] = by; pos[i*3+2] = d.py;
+    const c = pointColor(d, colorMode);
+    col[i*3] = c.r; col[i*3+1] = c.g; col[i*3+2] = c.b;
+    // drop line: ceiling mount -> bulb
+    lpos[i*6]   = d.px; lpos[i*6+1] = cyy; lpos[i*6+2] = d.py;
+    lpos[i*6+3] = d.px; lpos[i*6+4] = by;  lpos[i*6+5] = d.py;
+    lcol[i*6]   = c.r*0.25; lcol[i*6+1] = c.g*0.25; lcol[i*6+2] = c.b*0.25;
+    lcol[i*6+3] = c.r; lcol[i*6+4] = c.g; lcol[i*6+5] = c.b;
+  }
+  ptGeo.deleteAttribute('position'); ptGeo.deleteAttribute('color');
+  ptGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  ptGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  lineGeo.deleteAttribute('position'); lineGeo.deleteAttribute('color');
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(lpos, 3));
+  lineGeo.setAttribute('color', new THREE.BufferAttribute(lcol, 3));
+}
+
+// ── Room reference (ceiling outline + floor grid) ────────────────────────────
+const ceilZ = Math.max(...RAW.map(d => d.pz));
+const margin = 0.4;
+const ceilOutline = [
+  new THREE.Vector3(minPx - margin, ceilZ, minPy - margin),
+  new THREE.Vector3(maxPx + margin, ceilZ, minPy - margin),
+  new THREE.Vector3(maxPx + margin, ceilZ, maxPy + margin),
+  new THREE.Vector3(minPx - margin, ceilZ, maxPy + margin),
+  new THREE.Vector3(minPx - margin, ceilZ, minPy - margin),
+];
+scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ceilOutline),
+  new THREE.LineBasicMaterial({ color: 0x334466 })));
+
+const gw = (maxPx - minPx) + 2 * margin, gd = (maxPy - minPy) + 2 * margin;
+const grid = new THREE.GridHelper(Math.max(gw, gd), Math.round(Math.max(gw, gd) / 1), 0x223344, 0x141e2a);
+grid.position.set(cx, 0, cz);
+scene.add(grid);
+
+// ── Legend ────────────────────────────────────────────────────────────────────
+function buildLegend(mode) {
+  const el = document.getElementById('legend');
+  let h = `<div style="color:#aaa;margin-bottom:6px">Georgetown · Pulse Topology</div>
+    <div>${n} bulbs · ${lines.length} lines · ${universes.length} universes</div>
+    <div style="margin-top:4px">X span ${minPx.toFixed(2)}…${maxPx.toFixed(2)} m</div>
+    <div>Y span ${minPy.toFixed(2)}…${maxPy.toFixed(2)} m</div>
+    <div>Bulb height ${minBulbY.toFixed(2)}…${maxBulbY.toFixed(2)} m</div>
+    <div style="margin-top:6px;color:#888">Pitch ${RAW[0].pitchx} × ${RAW[0].pitchy} m</div>`;
+  if (mode === 'depth' || mode === 'drop' || mode === 'cable') {
+    h += `<div class="legend-row" style="margin-top:10px"><div class="legend-dot" style="background:#8800ff"></div> low / short</div>
+      <div class="legend-row"><div class="legend-dot" style="background:#00eeff"></div> high / long</div>`;
+  } else if (mode === 'universe') {
+    h += '<div style="margin-top:10px">' + universes.map(u =>
+      `<div class="legend-row"><div class="legend-dot" style="background:${'#' + categColor(universes.indexOf(u), universes.length).getHexString()}"></div> U${u}</div>`).join('') + '</div>';
+  }
+  el.innerHTML = h;
+}
+
+function refresh() { rebuild(); buildLegend(colorMode); }
+refresh();
+
+document.getElementById('colorMode').addEventListener('change', e => { colorMode = e.target.value; refresh(); });
+document.getElementById('ptSize').addEventListener('input', e => { ptMat.size = parseFloat(e.target.value) * 0.02; });
+document.getElementById('lineOp').addEventListener('input', e => { lineMat.opacity = parseFloat(e.target.value) / 100; });
+
+// ── Hover ─────────────────────────────────────────────────────────────────────
+const raycaster = new THREE.Raycaster();
+raycaster.params.Points.threshold = 0.1;
+const mouse = new THREE.Vector2();
+const tooltip = document.getElementById('tooltip');
+let hovered = -1;
+
+const highlight = new THREE.Mesh(
+  new THREE.SphereGeometry(0.07, 12, 12),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
+highlight.visible = false;
+scene.add(highlight);
+
+// dimension line (ceiling -> bulb) on hover
+const dimPos = new Float32Array(6);
+const dimGeo = new THREE.BufferGeometry();
+dimGeo.setAttribute('position', new THREE.BufferAttribute(dimPos, 3));
+const dimLine = new THREE.LineSegments(dimGeo,
+  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false }));
+dimLine.visible = false; dimLine.renderOrder = 20;
+scene.add(dimLine);
+
+function makeLabel(cls) {
+  const div = document.createElement('div');
+  div.className = 'dim-label ' + cls;
+  const obj = new CSS2DObject(div); obj.visible = false; scene.add(obj);
+  return { obj, div };
+}
+const lblDrop = makeLabel('drop');
+const lblHeight = makeLabel('height');
+const lblCable = makeLabel('cable');
+
+function setDimensions(d) {
+  const by = bulbY(d), cyy = ceilY(d);
+  dimPos[0] = d.px; dimPos[1] = cyy; dimPos[2] = d.py;
+  dimPos[3] = d.px; dimPos[4] = by;  dimPos[5] = d.py;
+  dimGeo.attributes.position.needsUpdate = true;
+  dimLine.visible = true;
+  lblDrop.obj.position.set(d.px + 0.12, (cyy + by) / 2, d.py);
+  lblDrop.div.textContent = d.drop.toFixed(3) + ' m drop';
+  lblHeight.obj.position.set(d.px + 0.12, by - 0.14, d.py);
+  lblHeight.div.textContent = by.toFixed(3) + ' m high';
+  lblCable.obj.position.set(d.px + 0.12, cyy + 0.16, d.py);
+  lblCable.div.textContent = d.cable.toFixed(3) + ' m cable';
+  [lblDrop, lblHeight, lblCable].forEach(l => l.obj.visible = true);
+}
+function hideDimensions() {
+  dimLine.visible = false;
+  [lblDrop, lblHeight, lblCable].forEach(l => l.obj.visible = false);
+}
+
+window.addEventListener('mousemove', e => {
+  mouse.x = (e.clientX / innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+  tooltip.style.left = (e.clientX + 16) + 'px';
+  tooltip.style.top = (e.clientY - 10) + 'px';
+});
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  labelRenderer.setSize(innerWidth, innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObject(pointCloud);
+  if (hits.length) {
+    const i = hits[0].index;
+    const d = RAW[i];
+    if (i !== hovered) {
+      hovered = i;
+      tooltip.style.display = 'block';
+      tooltip.textContent =
+        `ID ${d.id}   Line ${d.line}   Universe ${d.universe}\n` +
+        `mount (x ${d.px.toFixed(3)}, y ${d.py.toFixed(3)}, z ${d.pz.toFixed(3)})\n` +
+        `drop ${d.drop.toFixed(3)} m  ->  bulb height ${bulbY(d).toFixed(3)} m\n` +
+        `total cable ${d.cable.toFixed(3)} m`;
+    }
+    highlight.position.set(d.px, bulbY(d), d.py);
+    highlight.visible = true;
+    setDimensions(d);
+  } else {
+    if (hovered !== -1) hideDimensions();
+    hovered = -1;
+    tooltip.style.display = 'none';
+    highlight.visible = false;
+  }
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
