@@ -582,7 +582,7 @@ function setDimensions(d) {
   lblDrop.obj.position.set(sx + 0.12, (cyy + by) / 2, d.py);
   lblDrop.div.textContent = d.drop.toFixed(3) + ' m drop';
   lblHeight.obj.position.set(sx + 0.12, by - 0.14, d.py);
-  lblHeight.div.textContent = by.toFixed(3) + ' m high';
+  lblHeight.div.textContent = by.toFixed(3) + ' m to floor';
   lblCable.obj.position.set(sx + 0.12, cyy + 0.16, d.py);
   lblCable.div.textContent = d.cable.toFixed(3) + ' m cable';
   [lblDrop, lblHeight, lblCable].forEach(l => l.obj.visible = true);
@@ -619,8 +619,8 @@ function animate() {
       tooltip.textContent =
         `ID ${d.id}   Line ${d.line}   Universe ${d.universe}\n` +
         `mount (x ${d.px.toFixed(3)}, y ${d.py.toFixed(3)}, z ${d.pz.toFixed(3)})\n` +
-        `drop ${d.drop.toFixed(3)} m  ->  bulb height ${bulbY(d).toFixed(3)} m\n` +
-        `total cable ${d.cable.toFixed(3)} m` +
+        `drop ${d.drop.toFixed(3)} m (from ceiling)  ->  ${bulbY(d).toFixed(3)} m above floor\n` +
+        `total cable ${d.cable.toFixed(3)} m (from CSV)` +
         (cableRunMode !== 'off'
           ? `\nhomerun to ${cableRunSide(d)} wall ${cableRunLen(d).toFixed(3)} m  (generated)`
           : '');
