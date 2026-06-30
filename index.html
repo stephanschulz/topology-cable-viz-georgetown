@@ -69,8 +69,18 @@
     <input type="range" id="lineOp" min="0" max="100" value="35" step="5">
   </div>
   <div>
+    <label>Show line (row) <span id="rowFilterHint">all</span></label><br>
+    <input type="range" id="rowFilter" min="-1" max="0" value="-1" step="1"
+      title="-1 = all rows; otherwise one lineid by index in sorted list">
+  </div>
+  <div>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;color:#ccc;font-size:12px;">
       <input type="checkbox" id="mirrorX" checked> Mirror X (left-right flip)
+    </label>
+  </div>
+  <div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;color:#ccc;font-size:12px;">
+      <input type="checkbox" id="showGizmo" checked> CSV axis cross
     </label>
   </div>
   <div class="hint">
@@ -233,30 +243,48 @@ const dropLines = new THREE.LineSegments(lineGeo, lineMat);
 scene.add(dropLines);
 
 const n = RAW.length;
+// -1 = show all lines; otherwise index into sorted `lines`
+let selectedLineIdx = -1;
+let displayedIndex = [];
+
+function visibleIndices() {
+  if (selectedLineIdx < 0) return RAW.map((_, i) => i);
+  const lid = lines[selectedLineIdx];
+  const out = [];
+  for (let i = 0; i < n; i++) if (RAW[i].line === lid) out.push(i);
+  return out;
+}
+
 function rebuild() {
-  const pos = new Float32Array(n * 3);
-  const col = new Float32Array(n * 3);
-  const lpos = new Float32Array(n * 6);
-  const lcol = new Float32Array(n * 6);
-  for (let i = 0; i < n; i++) {
-    const d = RAW[i];
+  const vis = visibleIndices();
+  displayedIndex = vis;
+  const m = vis.length;
+  const cap = Math.max(1, m);
+  const pos = new Float32Array(cap * 3);
+  const col = new Float32Array(cap * 3);
+  const lpos = new Float32Array(cap * 6);
+  const lcol = new Float32Array(cap * 6);
+  for (let j = 0; j < m; j++) {
+    const d = RAW[vis[j]];
     const by = bulbY(d), cyy = ceilY(d);
     const sx = sceneX(d.px);
-    pos[i*3] = sx; pos[i*3+1] = by; pos[i*3+2] = d.py;
+    pos[j*3] = sx; pos[j*3+1] = by; pos[j*3+2] = d.py;
     const c = pointColor(d, colorMode);
-    col[i*3] = c.r; col[i*3+1] = c.g; col[i*3+2] = c.b;
+    col[j*3] = c.r; col[j*3+1] = c.g; col[j*3+2] = c.b;
     // drop line: ceiling mount -> bulb
-    lpos[i*6]   = sx; lpos[i*6+1] = cyy; lpos[i*6+2] = d.py;
-    lpos[i*6+3] = sx; lpos[i*6+4] = by;  lpos[i*6+5] = d.py;
-    lcol[i*6]   = c.r*0.25; lcol[i*6+1] = c.g*0.25; lcol[i*6+2] = c.b*0.25;
-    lcol[i*6+3] = c.r; lcol[i*6+4] = c.g; lcol[i*6+5] = c.b;
+    lpos[j*6]   = sx; lpos[j*6+1] = cyy; lpos[j*6+2] = d.py;
+    lpos[j*6+3] = sx; lpos[j*6+4] = by;  lpos[j*6+5] = d.py;
+    lcol[j*6]   = c.r*0.25; lcol[j*6+1] = c.g*0.25; lcol[j*6+2] = c.b*0.25;
+    lcol[j*6+3] = c.r; lcol[j*6+4] = c.g; lcol[j*6+5] = c.b;
   }
   ptGeo.deleteAttribute('position'); ptGeo.deleteAttribute('color');
-  ptGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  ptGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  ptGeo.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, cap*3), 3));
+  ptGeo.setAttribute('color', new THREE.BufferAttribute(col.subarray(0, cap*3), 3));
   lineGeo.deleteAttribute('position'); lineGeo.deleteAttribute('color');
-  lineGeo.setAttribute('position', new THREE.BufferAttribute(lpos, 3));
-  lineGeo.setAttribute('color', new THREE.BufferAttribute(lcol, 3));
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(lpos.subarray(0, cap*6), 3));
+  lineGeo.setAttribute('color', new THREE.BufferAttribute(lcol.subarray(0, cap*6), 3));
+  pointCloud.visible = m > 0;
+  dropLines.visible = m > 0;
 }
 
 // ── Room reference (ceiling outline + floor grid) ────────────────────────────
@@ -276,6 +304,82 @@ const gw = (maxPx - minPx) + 2 * margin, gd = (maxPy - minPy) + 2 * margin;
 const grid = new THREE.GridHelper(Math.max(gw, gd), Math.round(Math.max(gw, gd) / 1), 0x223344, 0x141e2a);
 grid.position.set(cx, 0, cz);
 scene.add(grid);
+
+// ── CSV axis cross + Entrance label (rebuilt on mirror toggle) ───────────────
+// CSV → scene: x = mirrored position_x, y = position_z (up), z = position_y
+function csvToScene(x, y, z) { return new THREE.Vector3(sceneX(x), z, y); }
+let showGizmo = true;
+
+const overlayGroup = new THREE.Group();
+overlayGroup.name = 'csvOverlays';
+scene.add(overlayGroup);
+
+function clearGroup(g) {
+  for (let i = g.children.length - 1; i >= 0; i--) {
+    const o = g.children[i];
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) o.material.dispose();
+    g.remove(o);
+  }
+}
+
+// Entrance sits just in front of line 0 (lowest lineid)
+const firstLid = lines[0];
+const line0 = RAW.filter(d => d.line === firstLid);
+const line0Cx = line0.reduce((s, d) => s + d.px, 0) / Math.max(1, line0.length);
+const line0Py = Math.min(...line0.map(d => d.py));
+
+function addOverlayLabel(p, text, color, borderColor) {
+  const div = document.createElement('div');
+  div.className = 'dim-label';
+  div.style.color = color;
+  if (borderColor) div.style.borderColor = borderColor;
+  div.textContent = text;
+  const lo = new CSS2DObject(div);
+  lo.position.copy(p);
+  overlayGroup.add(lo);
+  return lo;
+}
+
+function buildOverlays() {
+  clearGroup(overlayGroup);
+
+  // RGB axis cross at CSV origin (0,0,0): +X red, +Y green, +Z blue
+  const plan = Math.max(maxPx - minPx, maxPy - minPy, 0.01);
+  const vert = Math.max(maxBulbY - minBulbY, 0.01);
+  const armLen = Math.max(1.5, 0.1 * Math.max(plan, vert));
+  const O = csvToScene(0, 0, 0);
+  const aX = csvToScene(1, 0, 0).sub(O).setLength(armLen).add(O);
+  const aY = csvToScene(0, 1, 0).sub(O).setLength(armLen).add(O);
+  const aZ = csvToScene(0, 0, 1).sub(O).setLength(armLen).add(O);
+  if (showGizmo) {
+    const pos = new Float32Array([
+      O.x, O.y, O.z, aX.x, aX.y, aX.z,
+      O.x, O.y, O.z, aY.x, aY.y, aY.z,
+      O.x, O.y, O.z, aZ.x, aZ.y, aZ.z
+    ]);
+    const colr = new Float32Array([
+      1, 0.2, 0.2, 1, 0.3, 0.3,
+      0.2, 1, 0.2, 0.3, 1, 0.3,
+      0.25, 0.4, 1, 0.3, 0.5, 1
+    ]);
+    const gGeo = new THREE.BufferGeometry();
+    gGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    gGeo.setAttribute('color', new THREE.BufferAttribute(colr, 3));
+    const gSeg = new THREE.LineSegments(gGeo,
+      new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true, opacity: 0.98 }));
+    gSeg.renderOrder = 50;
+    overlayGroup.add(gSeg);
+    addOverlayLabel(aX, 'CSV +X', '#f66');
+    addOverlayLabel(aY, 'CSV +Y', '#6f6');
+    addOverlayLabel(aZ, 'CSV +Z', '#6af');
+  }
+
+  // Entrance label near line 0, at floor level
+  const ent = csvToScene(line0Cx, line0Py - 0.8, 0);
+  ent.y = 0.06;
+  addOverlayLabel(ent, 'Entrance', '#d4d4c8', '#786');
+}
 
 // ── Legend ────────────────────────────────────────────────────────────────────
 function buildLegend(mode) {
@@ -298,11 +402,24 @@ function buildLegend(mode) {
 
 function refresh() { rebuild(); buildLegend(colorMode); }
 refresh();
+buildOverlays();
+
+const rowFilter = document.getElementById('rowFilter');
+const rowFilterHint = document.getElementById('rowFilterHint');
+rowFilter.max = String(lines.length - 1);
+function updateRowFilterHint() {
+  rowFilterHint.textContent = selectedLineIdx < 0
+    ? 'all'
+    : `${selectedLineIdx + 1}/${lines.length} · lineid ${lines[selectedLineIdx]}`;
+}
+updateRowFilterHint();
 
 document.getElementById('colorMode').addEventListener('change', e => { colorMode = e.target.value; refresh(); });
 document.getElementById('ptSize').addEventListener('input', e => { ptMat.size = parseFloat(e.target.value) * 0.02; });
 document.getElementById('lineOp').addEventListener('input', e => { lineMat.opacity = parseFloat(e.target.value) / 100; });
-document.getElementById('mirrorX').addEventListener('change', e => { mirrorX = e.target.checked; refresh(); });
+document.getElementById('mirrorX').addEventListener('change', e => { mirrorX = e.target.checked; refresh(); buildOverlays(); });
+document.getElementById('showGizmo').addEventListener('change', e => { showGizmo = e.target.checked; buildOverlays(); });
+rowFilter.addEventListener('input', e => { selectedLineIdx = parseInt(e.target.value, 10); updateRowFilterHint(); refresh(); });
 
 // ── Hover ─────────────────────────────────────────────────────────────────────
 const raycaster = new THREE.Raycaster();
@@ -372,12 +489,12 @@ function animate() {
   requestAnimationFrame(animate);
   controls.update();
   raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObject(pointCloud);
-  if (hits.length) {
-    const i = hits[0].index;
-    const d = RAW[i];
-    if (i !== hovered) {
-      hovered = i;
+  const hits = pointCloud.visible ? raycaster.intersectObject(pointCloud) : [];
+  if (hits.length && displayedIndex.length) {
+    const rawIdx = displayedIndex[hits[0].index];
+    const d = RAW[rawIdx];
+    if (rawIdx !== hovered) {
+      hovered = rawIdx;
       tooltip.style.display = 'block';
       tooltip.textContent =
         `ID ${d.id}   Line ${d.line}   Universe ${d.universe}\n` +
