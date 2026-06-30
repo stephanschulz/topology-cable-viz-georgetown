@@ -102,6 +102,11 @@
       <input type="checkbox" id="showHomerun" checked> Show homerun cables
     </label>
   </div>
+  <div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;color:#ccc;font-size:12px;">
+      <input type="checkbox" id="showRoomDims" checked> Room dimensions
+    </label>
+  </div>
   <div class="hint">
     <b>Pulse Topology</b> — hanging bulbs.<br>
     Each bulb drops <code>BulbCables</code> m below its ceiling mount.<br>
@@ -211,9 +216,19 @@ const cyMid = (minBulbY + maxBulbY) / 2;
 // 'split' = nearest of the two (mounts left of centre go left, the rest right).
 let cableRunMode = 'off';
 let showHomerun = true;
-const wallPad = 0.4;
-const leftWallX = minPx - wallPad;
-const rightWallX = maxPx + wallPad;
+let showRoomDims = true;
+// Room side walls sit 0.25 m outside the reference bulbs: line 33's first bulb
+// (left) and row 32's last bulb (right), per the installed room.
+const WALL_OFFSET = 0.25;
+const ROOM_HEIGHT = 3.81; // floor-to-ceiling where the row cables run
+function lineSorted(lid) { return RAW.filter(d => d.line === lid).sort((a, b) => a.index - b.index); }
+const _l33 = lineSorted(33), _r32 = lineSorted(32);
+const leftRefX = _l33.length ? _l33[0].px : minPx;
+const leftRefY = _l33.length ? _l33[0].py : minPy;
+const rightRefX = _r32.length ? _r32[_r32.length - 1].px : maxPx;
+const rightRefY = _r32.length ? _r32[_r32.length - 1].py : maxPy;
+const leftWallX = leftRefX - WALL_OFFSET;
+const rightWallX = rightRefX + WALL_OFFSET;
 function wallTargetX(d) {
   if (cableRunMode === 'left') return leftWallX;
   if (cableRunMode === 'right') return rightWallX;
@@ -495,6 +510,63 @@ function buildWalls() {
   if (showRight) mk(rightWallX);
 }
 
+// ── Room dimension markers (toggle) ──────────────────────────────────────────
+const roomDimGroup = new THREE.Group();
+roomDimGroup.name = 'roomDims';
+scene.add(roomDimGroup);
+
+// floor-level scene point for a CSV (x, y) ground position
+function floorPt(cxv, cyv, h = 0) { const v = csvToScene(cxv, cyv, h); v.y = h + 0.02; return v; }
+
+function addDim(a, b, text, css, tickDir) {
+  const col = new THREE.Color(css);
+  const mat = () => new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.95, depthTest: false });
+  const mkLine = (p, q) => { const o = new THREE.Line(new THREE.BufferGeometry().setFromPoints([p, q]), mat()); o.renderOrder = 30; roomDimGroup.add(o); };
+  mkLine(a, b);
+  if (tickDir) {
+    const t = tickDir.clone().setLength(0.12);
+    mkLine(a.clone().add(t), a.clone().sub(t));
+    mkLine(b.clone().add(t), b.clone().sub(t));
+  }
+  const div = document.createElement('div');
+  div.className = 'dim-label';
+  div.style.color = css;
+  div.style.borderColor = css + '66';
+  div.textContent = text;
+  const lo = new CSS2DObject(div);
+  lo.position.copy(a.clone().add(b).multiplyScalar(0.5));
+  roomDimGroup.add(lo);
+}
+
+function buildRoomDims() {
+  clearGroup(roomDimGroup);
+  if (!showRoomDims) return;
+  const EX = new THREE.Vector3(1, 0, 0), EY = new THREE.Vector3(0, 1, 0), EZ = new THREE.Vector3(0, 0, 1);
+  const width = rightWallX - leftWallX;
+  const depth = maxPy - minPy;
+  const frontY = minPy - 0.7;
+  const sideX = leftWallX - 0.5;
+
+  // Room footprint rectangle on the floor (walls × depth extent)
+  const corners = [
+    floorPt(leftWallX, minPy), floorPt(rightWallX, minPy),
+    floorPt(rightWallX, maxPy), floorPt(leftWallX, maxPy), floorPt(leftWallX, minPy),
+  ];
+  const fp = new THREE.Line(new THREE.BufferGeometry().setFromPoints(corners),
+    new THREE.LineBasicMaterial({ color: 0x44627f, transparent: true, opacity: 0.6 }));
+  roomDimGroup.add(fp);
+
+  // Width (X, wall to wall) along the front edge
+  addDim(floorPt(leftWallX, frontY), floorPt(rightWallX, frontY), `width ${width.toFixed(2)} m`, '#9fd0ff', EZ);
+  // Depth (Y) along the left side
+  addDim(floorPt(sideX, minPy), floorPt(sideX, maxPy), `depth ${depth.toFixed(2)} m`, '#9fd0ff', EX);
+  // Height (floor → ceiling) at the front-left corner
+  addDim(csvToScene(leftWallX, frontY, 0), csvToScene(leftWallX, frontY, ROOM_HEIGHT), `height ${ROOM_HEIGHT.toFixed(2)} m`, '#aaff88', EX);
+  // 0.25 m wall offsets at the two reference bulbs
+  addDim(floorPt(leftRefX, leftRefY), floorPt(leftWallX, leftRefY), `${WALL_OFFSET.toFixed(3)} m`, '#ffcc66', EZ);
+  addDim(floorPt(rightRefX, rightRefY), floorPt(rightWallX, rightRefY), `${WALL_OFFSET.toFixed(3)} m`, '#ffcc66', EZ);
+}
+
 // ── Legend ────────────────────────────────────────────────────────────────────
 function buildLegend(mode) {
   const el = document.getElementById('legend');
@@ -517,7 +589,7 @@ function buildLegend(mode) {
   el.innerHTML = h;
 }
 
-function refresh() { rebuild(); buildWalls(); buildLegend(colorMode); }
+function refresh() { rebuild(); buildWalls(); buildRoomDims(); buildLegend(colorMode); }
 refresh();
 buildOverlays();
 
@@ -539,6 +611,7 @@ document.getElementById('mirrorX').addEventListener('change', e => { mirrorX = e
 document.getElementById('showGizmo').addEventListener('change', e => { showGizmo = e.target.checked; buildOverlays(); });
 document.getElementById('cableRun').addEventListener('change', e => { cableRunMode = e.target.value; refresh(); });
 document.getElementById('showHomerun').addEventListener('change', e => { showHomerun = e.target.checked; refresh(); });
+document.getElementById('showRoomDims').addEventListener('change', e => { showRoomDims = e.target.checked; buildRoomDims(); });
 rowFilter.addEventListener('input', e => { selectedLineIdx = parseInt(e.target.value, 10); updateRowFilterHint(); refresh(); });
 
 // ── Hover ─────────────────────────────────────────────────────────────────────
