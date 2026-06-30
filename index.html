@@ -68,6 +68,11 @@
     <label>Drop line opacity</label><br>
     <input type="range" id="lineOp" min="0" max="100" value="35" step="5">
   </div>
+  <div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;color:#ccc;font-size:12px;">
+      <input type="checkbox" id="mirrorX" checked> Mirror X (left-right flip)
+    </label>
+  </div>
   <div class="hint">
     <b>Pulse Topology</b> — hanging bulbs.<br>
     Each bulb drops <code>BulbCables</code> m below its ceiling mount.<br>
@@ -155,8 +160,11 @@ const ceilY = d => d.pz;
 const pxs = RAW.map(d => d.px), pys = RAW.map(d => d.py);
 const minPx = Math.min(...pxs), maxPx = Math.max(...pxs);
 const minPy = Math.min(...pys), maxPy = Math.max(...pys);
-// Mirror plan X left-right (matches Boston viewing orientation)
-const sceneX = x => minPx + maxPx - x;
+// Mirror plan X left-right (matches Boston viewing orientation).
+// Toggled by the "Mirror X" checkbox; on by default since the source
+// data reads opposite to the needed orientation.
+let mirrorX = true;
+const sceneX = x => mirrorX ? (minPx + maxPx - x) : x;
 const bys = RAW.map(bulbY);
 const minBulbY = Math.min(...bys), maxBulbY = Math.max(...bys);
 const drops = RAW.map(d => d.drop);
@@ -294,6 +302,7 @@ refresh();
 document.getElementById('colorMode').addEventListener('change', e => { colorMode = e.target.value; refresh(); });
 document.getElementById('ptSize').addEventListener('input', e => { ptMat.size = parseFloat(e.target.value) * 0.02; });
 document.getElementById('lineOp').addEventListener('input', e => { lineMat.opacity = parseFloat(e.target.value) / 100; });
+document.getElementById('mirrorX').addEventListener('change', e => { mirrorX = e.target.checked; refresh(); });
 
 // ── Hover ─────────────────────────────────────────────────────────────────────
 const raycaster = new THREE.Raycaster();
