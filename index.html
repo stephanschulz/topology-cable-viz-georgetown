@@ -69,6 +69,11 @@
     <input type="range" id="lineOp" min="0" max="100" value="35" step="5">
   </div>
   <div>
+    <label>Floor grid</label><br>
+    <input type="range" id="floorInt" min="0" max="100" value="0" step="1"
+      title="min = current; higher makes the floor more dominant">
+  </div>
+  <div>
     <label>Show line (row) <span id="rowFilterHint">all</span></label><br>
     <input type="range" id="rowFilter" min="-1" max="0" value="-1" step="1"
       title="-1 = all rows; otherwise one lineid by index in sorted list">
@@ -301,9 +306,30 @@ scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ceilOutline),
   new THREE.LineBasicMaterial({ color: 0x334466 })));
 
 const gw = (maxPx - minPx) + 2 * margin, gd = (maxPy - minPy) + 2 * margin;
-const grid = new THREE.GridHelper(Math.max(gw, gd), Math.round(Math.max(gw, gd) / 1), 0x223344, 0x141e2a);
-grid.position.set(cx, 0, cz);
-scene.add(grid);
+const GRID_SIZE = Math.max(gw, gd);
+const GRID_DIV = Math.round(GRID_SIZE / 1);
+const baseCenter = new THREE.Color(0x223344), baseGrid = new THREE.Color(0x141e2a);
+const brightCenter = new THREE.Color(0x9fc0ee), brightGrid = new THREE.Color(0x5a76a6);
+
+const floorFill = new THREE.Mesh(
+  new THREE.PlaneGeometry(GRID_SIZE, GRID_SIZE),
+  new THREE.MeshBasicMaterial({ color: 0x24395c, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
+floorFill.rotation.x = -Math.PI / 2;
+floorFill.position.set(cx, -0.003, cz);
+scene.add(floorFill);
+
+let grid;
+// t in [0,1]: 0 = current look (min), 1 = most dominant
+function setFloorIntensity(t) {
+  if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
+  const c1 = baseCenter.clone().lerp(brightCenter, t);
+  const c2 = baseGrid.clone().lerp(brightGrid, t);
+  grid = new THREE.GridHelper(GRID_SIZE, GRID_DIV, c1, c2);
+  grid.position.set(cx, 0, cz);
+  scene.add(grid);
+  floorFill.material.opacity = t * 0.55;
+}
+setFloorIntensity(0);
 
 // ── CSV axis cross + Entrance label (rebuilt on mirror toggle) ───────────────
 // CSV → scene: x = mirrored position_x, y = position_z (up), z = position_y
@@ -417,6 +443,7 @@ updateRowFilterHint();
 document.getElementById('colorMode').addEventListener('change', e => { colorMode = e.target.value; refresh(); });
 document.getElementById('ptSize').addEventListener('input', e => { ptMat.size = parseFloat(e.target.value) * 0.02; });
 document.getElementById('lineOp').addEventListener('input', e => { lineMat.opacity = parseFloat(e.target.value) / 100; });
+document.getElementById('floorInt').addEventListener('input', e => { setFloorIntensity(parseFloat(e.target.value) / 100); });
 document.getElementById('mirrorX').addEventListener('change', e => { mirrorX = e.target.checked; refresh(); buildOverlays(); });
 document.getElementById('showGizmo').addEventListener('change', e => { showGizmo = e.target.checked; buildOverlays(); });
 rowFilter.addEventListener('input', e => { selectedLineIdx = parseInt(e.target.value, 10); updateRowFilterHint(); refresh(); });
