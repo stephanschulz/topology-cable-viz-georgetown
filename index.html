@@ -147,7 +147,7 @@ try {
 }
 
 // ── Scene coordinate mapping (Y up) ──────────────────────────────────────────
-//   scene.x = px,  scene.y = height,  scene.z = py
+//   scene.x = mirrored px,  scene.y = height,  scene.z = py
 //   ceiling at y = pz,  bulb at y = pz + bulbZ
 const bulbY = d => d.pz + d.bulbZ;
 const ceilY = d => d.pz;
@@ -155,6 +155,8 @@ const ceilY = d => d.pz;
 const pxs = RAW.map(d => d.px), pys = RAW.map(d => d.py);
 const minPx = Math.min(...pxs), maxPx = Math.max(...pxs);
 const minPy = Math.min(...pys), maxPy = Math.max(...pys);
+// Mirror plan X left-right (matches Boston viewing orientation)
+const sceneX = x => minPx + maxPx - x;
 const bys = RAW.map(bulbY);
 const minBulbY = Math.min(...bys), maxBulbY = Math.max(...bys);
 const drops = RAW.map(d => d.drop);
@@ -231,12 +233,13 @@ function rebuild() {
   for (let i = 0; i < n; i++) {
     const d = RAW[i];
     const by = bulbY(d), cyy = ceilY(d);
-    pos[i*3] = d.px; pos[i*3+1] = by; pos[i*3+2] = d.py;
+    const sx = sceneX(d.px);
+    pos[i*3] = sx; pos[i*3+1] = by; pos[i*3+2] = d.py;
     const c = pointColor(d, colorMode);
     col[i*3] = c.r; col[i*3+1] = c.g; col[i*3+2] = c.b;
     // drop line: ceiling mount -> bulb
-    lpos[i*6]   = d.px; lpos[i*6+1] = cyy; lpos[i*6+2] = d.py;
-    lpos[i*6+3] = d.px; lpos[i*6+4] = by;  lpos[i*6+5] = d.py;
+    lpos[i*6]   = sx; lpos[i*6+1] = cyy; lpos[i*6+2] = d.py;
+    lpos[i*6+3] = sx; lpos[i*6+4] = by;  lpos[i*6+5] = d.py;
     lcol[i*6]   = c.r*0.25; lcol[i*6+1] = c.g*0.25; lcol[i*6+2] = c.b*0.25;
     lcol[i*6+3] = c.r; lcol[i*6+4] = c.g; lcol[i*6+5] = c.b;
   }
@@ -325,16 +328,16 @@ const lblHeight = makeLabel('height');
 const lblCable = makeLabel('cable');
 
 function setDimensions(d) {
-  const by = bulbY(d), cyy = ceilY(d);
-  dimPos[0] = d.px; dimPos[1] = cyy; dimPos[2] = d.py;
-  dimPos[3] = d.px; dimPos[4] = by;  dimPos[5] = d.py;
+  const by = bulbY(d), cyy = ceilY(d), sx = sceneX(d.px);
+  dimPos[0] = sx; dimPos[1] = cyy; dimPos[2] = d.py;
+  dimPos[3] = sx; dimPos[4] = by;  dimPos[5] = d.py;
   dimGeo.attributes.position.needsUpdate = true;
   dimLine.visible = true;
-  lblDrop.obj.position.set(d.px + 0.12, (cyy + by) / 2, d.py);
+  lblDrop.obj.position.set(sx + 0.12, (cyy + by) / 2, d.py);
   lblDrop.div.textContent = d.drop.toFixed(3) + ' m drop';
-  lblHeight.obj.position.set(d.px + 0.12, by - 0.14, d.py);
+  lblHeight.obj.position.set(sx + 0.12, by - 0.14, d.py);
   lblHeight.div.textContent = by.toFixed(3) + ' m high';
-  lblCable.obj.position.set(d.px + 0.12, cyy + 0.16, d.py);
+  lblCable.obj.position.set(sx + 0.12, cyy + 0.16, d.py);
   lblCable.div.textContent = d.cable.toFixed(3) + ' m cable';
   [lblDrop, lblHeight, lblCable].forEach(l => l.obj.visible = true);
 }
@@ -373,7 +376,7 @@ function animate() {
         `drop ${d.drop.toFixed(3)} m  ->  bulb height ${bulbY(d).toFixed(3)} m\n` +
         `total cable ${d.cable.toFixed(3)} m`;
     }
-    highlight.position.set(d.px, bulbY(d), d.py);
+    highlight.position.set(sceneX(d.px), bulbY(d), d.py);
     highlight.visible = true;
     setDimensions(d);
   } else {
