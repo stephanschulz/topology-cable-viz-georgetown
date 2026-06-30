@@ -89,13 +89,18 @@
     </label>
   </div>
   <div>
-    <label>Cable run to wall <span style="color:#ffaa44">(generated)</span></label><br>
+    <label>Homerun cables <span style="color:#ffaa44">(generated)</span></label><br>
     <select id="cableRun">
       <option value="off">Off — not in CSV</option>
       <option value="left">All cable to left wall</option>
       <option value="right">All cable to right wall</option>
       <option value="split">Split at middle (nearest wall)</option>
     </select>
+  </div>
+  <div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;color:#ccc;font-size:12px;">
+      <input type="checkbox" id="showHomerun" checked> Show homerun cables
+    </label>
   </div>
   <div class="hint">
     <b>Pulse Topology</b> — hanging bulbs.<br>
@@ -205,6 +210,7 @@ const cyMid = (minBulbY + maxBulbY) / 2;
 // side wall along X. 'left' = all to -X wall, 'right' = all to +X wall,
 // 'split' = nearest of the two (mounts left of centre go left, the rest right).
 let cableRunMode = 'off';
+let showHomerun = true;
 const wallPad = 0.4;
 const leftWallX = minPx - wallPad;
 const rightWallX = maxPx + wallPad;
@@ -278,12 +284,15 @@ const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: t
 const dropLines = new THREE.LineSegments(lineGeo, lineMat);
 scene.add(dropLines);
 
-// Generated ceiling cable runs to a side wall (orange)
+// Generated homerun cables to a side wall — tapered ribbons (wide at the bulb,
+// narrowing to the wall) so the run direction reads clearly. Orange.
 const runGeo = new THREE.BufferGeometry();
-const runMat = new THREE.LineBasicMaterial({ color: 0xffaa44, transparent: true, opacity: 0.5 });
-const runLines = new THREE.LineSegments(runGeo, runMat);
+const runMat = new THREE.MeshBasicMaterial({ color: 0xffaa44, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false });
+const runLines = new THREE.Mesh(runGeo, runMat);
 runLines.visible = false;
 scene.add(runLines);
+const HOMERUN_W_START = 0.085; // half-width at the bulb end (m)
+const HOMERUN_W_END = 0.003;   // half-width at the wall end (m)
 
 const n = RAW.length;
 // -1 = show all lines; otherwise index into sorted `lines`
@@ -307,8 +316,8 @@ function rebuild() {
   const col = new Float32Array(cap * 3);
   const lpos = new Float32Array(cap * 6);
   const lcol = new Float32Array(cap * 6);
-  const runOn = cableRunMode !== 'off';
-  const rpos = new Float32Array(cap * 6);
+  const runOn = cableRunMode !== 'off' && showHomerun;
+  const rpos = new Float32Array(cap * 18); // 2 triangles (6 verts) per ribbon
   for (let j = 0; j < m; j++) {
     const d = RAW[vis[j]];
     const by = bulbY(d), cyy = ceilY(d);
@@ -321,15 +330,24 @@ function rebuild() {
     lpos[j*6+3] = sx; lpos[j*6+4] = by;  lpos[j*6+5] = d.py;
     lcol[j*6]   = c.r*0.25; lcol[j*6+1] = c.g*0.25; lcol[j*6+2] = c.b*0.25;
     lcol[j*6+3] = c.r; lcol[j*6+4] = c.g; lcol[j*6+5] = c.b;
-    // generated cable run to wall along X at ceiling height
+    // generated homerun cable: tapered ribbon along X at ceiling height,
+    // wide at the bulb (sx) narrowing to the wall (wx), spread along py (scene z)
     if (runOn) {
       const wx = sceneX(wallTargetX(d));
-      rpos[j*6]   = sx; rpos[j*6+1] = cyy; rpos[j*6+2] = d.py;
-      rpos[j*6+3] = wx; rpos[j*6+4] = cyy; rpos[j*6+5] = d.py;
+      const z = d.py, ws = HOMERUN_W_START, we = HOMERUN_W_END;
+      const o = j * 18;
+      // triangle 1: bulb-near, bulb-far, wall-far
+      rpos[o]    = sx; rpos[o+1]  = cyy; rpos[o+2]  = z - ws;
+      rpos[o+3]  = sx; rpos[o+4]  = cyy; rpos[o+5]  = z + ws;
+      rpos[o+6]  = wx; rpos[o+7]  = cyy; rpos[o+8]  = z + we;
+      // triangle 2: bulb-near, wall-far, wall-near
+      rpos[o+9]  = sx; rpos[o+10] = cyy; rpos[o+11] = z - ws;
+      rpos[o+12] = wx; rpos[o+13] = cyy; rpos[o+14] = z + we;
+      rpos[o+15] = wx; rpos[o+16] = cyy; rpos[o+17] = z - we;
     }
   }
   runGeo.deleteAttribute('position');
-  runGeo.setAttribute('position', new THREE.BufferAttribute(rpos.subarray(0, cap*6), 3));
+  runGeo.setAttribute('position', new THREE.BufferAttribute(rpos.subarray(0, cap*18), 3));
   runLines.visible = runOn && m > 0;
   ptGeo.deleteAttribute('position'); ptGeo.deleteAttribute('color');
   ptGeo.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, cap*3), 3));
@@ -462,7 +480,7 @@ wallGroup.name = 'cableRunWalls';
 scene.add(wallGroup);
 function buildWalls() {
   clearGroup(wallGroup);
-  if (cableRunMode === 'off') return;
+  if (cableRunMode === 'off' || !showHomerun) return;
   const showLeft = cableRunMode === 'left' || cableRunMode === 'split';
   const showRight = cableRunMode === 'right' || cableRunMode === 'split';
   const mk = (wx) => {
@@ -493,8 +511,8 @@ function buildLegend(mode) {
     h += '<div style="margin-top:10px">' + universes.map(u =>
       `<div class="legend-row"><div class="legend-dot" style="background:${'#' + categColor(universes.indexOf(u), universes.length).getHexString()}"></div> U${u}</div>`).join('') + '</div>';
   }
-  if (cableRunMode !== 'off') {
-    h += `<div style="margin-top:10px;color:#ffaa44">— cable run to wall (${cableRunMode})</div>`;
+  if (cableRunMode !== 'off' && showHomerun) {
+    h += `<div style="margin-top:10px;color:#ffaa44">▸ homerun cables (${cableRunMode}) · taper points to wall</div>`;
   }
   el.innerHTML = h;
 }
@@ -520,6 +538,7 @@ document.getElementById('floorInt').addEventListener('input', e => { setFloorInt
 document.getElementById('mirrorX').addEventListener('change', e => { mirrorX = e.target.checked; refresh(); buildOverlays(); });
 document.getElementById('showGizmo').addEventListener('change', e => { showGizmo = e.target.checked; buildOverlays(); });
 document.getElementById('cableRun').addEventListener('change', e => { cableRunMode = e.target.value; refresh(); });
+document.getElementById('showHomerun').addEventListener('change', e => { showHomerun = e.target.checked; refresh(); });
 rowFilter.addEventListener('input', e => { selectedLineIdx = parseInt(e.target.value, 10); updateRowFilterHint(); refresh(); });
 
 // ── Hover ─────────────────────────────────────────────────────────────────────
@@ -603,7 +622,7 @@ function animate() {
         `drop ${d.drop.toFixed(3)} m  ->  bulb height ${bulbY(d).toFixed(3)} m\n` +
         `total cable ${d.cable.toFixed(3)} m` +
         (cableRunMode !== 'off'
-          ? `\ncable run to ${cableRunSide(d)} wall ${cableRunLen(d).toFixed(3)} m  (generated)`
+          ? `\nhomerun to ${cableRunSide(d)} wall ${cableRunLen(d).toFixed(3)} m  (generated)`
           : '');
     }
     highlight.position.set(sceneX(d.px), bulbY(d), d.py);
