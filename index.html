@@ -107,6 +107,17 @@
       <input type="checkbox" id="showRoomDims" checked> Room dimensions
     </label>
   </div>
+  <div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:0;color:#ccc;font-size:12px;">
+      <input type="checkbox" id="showObj"> Show <code>full_cables.obj</code>
+    </label>
+    <p id="objStatusHint" class="hint" style="margin:2px 0 0 0;color:#888">off · real cable mesh (toggle to fetch)</p>
+  </div>
+  <div style="margin-top:6px;display:flex;align-items:center;gap:8px;">
+    <button id="saveSettings" type="button"
+      style="background:#1d2a3a;color:#cfe3ff;border:1px solid #3a5170;border-radius:4px;padding:5px 10px;font:inherit;font-size:12px;cursor:pointer;">Save settings</button>
+    <span id="saveHint" style="color:#6f9; font-size:11px;"></span>
+  </div>
   <div class="hint">
     <b>Pulse Topology</b> — hanging bulbs.<br>
     Each bulb drops <code>BulbCables</code> m below its ceiling mount.<br>
@@ -135,6 +146,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import { Line2 } from 'three/addons/lines/Line2.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 
 // Data source — override with ?csv=filename.csv in the URL
 const params = new URLSearchParams(location.search);
@@ -225,8 +239,10 @@ function lineSorted(lid) { return RAW.filter(d => d.line === lid).sort((a, b) =>
 const _l33 = lineSorted(33), _r32 = lineSorted(32);
 const leftRefX = _l33.length ? _l33[0].px : minPx;
 const leftRefY = _l33.length ? _l33[0].py : minPy;
+const leftRefZ = _l33.length ? _l33[0].pz : ROOM_HEIGHT;
 const rightRefX = _r32.length ? _r32[_r32.length - 1].px : maxPx;
 const rightRefY = _r32.length ? _r32[_r32.length - 1].py : maxPy;
+const rightRefZ = _r32.length ? _r32[_r32.length - 1].pz : ROOM_HEIGHT;
 const leftWallX = leftRefX - WALL_OFFSET;
 const rightWallX = rightRefX + WALL_OFFSET;
 function wallTargetX(d) {
@@ -241,7 +257,8 @@ function cableRunSide(d) {
   if (cableRunMode === 'split') return d.px <= cx ? 'left' : 'right';
   return '';
 }
-function cableRunLen(d) { return Math.abs(d.px - wallTargetX(d)); }
+function cableRunHoriz(d) { return Math.abs(d.px - wallTargetX(d)); }            // along ceiling to wall
+function cableRunHomerun(d) { return cableRunHoriz(d) + ROOM_HEIGHT; }           // + ceiling-to-floor drop
 
 // ── Renderers ────────────────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -332,7 +349,7 @@ function rebuild() {
   const lpos = new Float32Array(cap * 6);
   const lcol = new Float32Array(cap * 6);
   const runOn = cableRunMode !== 'off' && showHomerun;
-  const rpos = new Float32Array(cap * 18); // 2 triangles (6 verts) per ribbon
+  const rpos = new Float32Array(cap * 36); // ceiling ribbon (18) + wall drop (18)
   for (let j = 0; j < m; j++) {
     const d = RAW[vis[j]];
     const by = bulbY(d), cyy = ceilY(d);
@@ -345,24 +362,33 @@ function rebuild() {
     lpos[j*6+3] = sx; lpos[j*6+4] = by;  lpos[j*6+5] = d.py;
     lcol[j*6]   = c.r*0.25; lcol[j*6+1] = c.g*0.25; lcol[j*6+2] = c.b*0.25;
     lcol[j*6+3] = c.r; lcol[j*6+4] = c.g; lcol[j*6+5] = c.b;
-    // generated homerun cable: tapered ribbon along X at ceiling height,
-    // thin at the bulb (sx) thickening toward the wall (wx), spread along py (scene z)
+    // generated homerun cable: tapered ribbon along X at ceiling height (thin at
+    // the bulb, thickening toward the wall) then a vertical drop down the wall to
+    // the floor (spread along py / scene z)
     if (runOn) {
       const wx = sceneX(wallTargetX(d));
       const z = d.py, ws = HOMERUN_W_START, we = HOMERUN_W_END;
-      const o = j * 18;
-      // triangle 1: bulb-near, bulb-far, wall-far
+      const o = j * 36;
+      // ceiling ribbon — tri 1: bulb-near, bulb-far, wall-far
       rpos[o]    = sx; rpos[o+1]  = cyy; rpos[o+2]  = z - ws;
       rpos[o+3]  = sx; rpos[o+4]  = cyy; rpos[o+5]  = z + ws;
       rpos[o+6]  = wx; rpos[o+7]  = cyy; rpos[o+8]  = z + we;
-      // triangle 2: bulb-near, wall-far, wall-near
+      // ceiling ribbon — tri 2: bulb-near, wall-far, wall-near
       rpos[o+9]  = sx; rpos[o+10] = cyy; rpos[o+11] = z - ws;
       rpos[o+12] = wx; rpos[o+13] = cyy; rpos[o+14] = z + we;
       rpos[o+15] = wx; rpos[o+16] = cyy; rpos[o+17] = z - we;
+      // wall drop ribbon (ceiling -> floor at wall) — tri 1: top-near, top-far, bot-far
+      rpos[o+18] = wx; rpos[o+19] = cyy; rpos[o+20] = z - we;
+      rpos[o+21] = wx; rpos[o+22] = cyy; rpos[o+23] = z + we;
+      rpos[o+24] = wx; rpos[o+25] = 0;   rpos[o+26] = z + we;
+      // wall drop ribbon — tri 2: top-near, bot-far, bot-near
+      rpos[o+27] = wx; rpos[o+28] = cyy; rpos[o+29] = z - we;
+      rpos[o+30] = wx; rpos[o+31] = 0;   rpos[o+32] = z + we;
+      rpos[o+33] = wx; rpos[o+34] = 0;   rpos[o+35] = z - we;
     }
   }
   runGeo.deleteAttribute('position');
-  runGeo.setAttribute('position', new THREE.BufferAttribute(rpos.subarray(0, cap*18), 3));
+  runGeo.setAttribute('position', new THREE.BufferAttribute(rpos.subarray(0, cap*36), 3));
   runLines.visible = runOn && m > 0;
   ptGeo.deleteAttribute('position'); ptGeo.deleteAttribute('color');
   ptGeo.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, cap*3), 3));
@@ -377,15 +403,6 @@ function rebuild() {
 // ── Room reference (ceiling outline + floor grid) ────────────────────────────
 const ceilZ = Math.max(...RAW.map(d => d.pz));
 const margin = 0.4;
-const ceilOutline = [
-  new THREE.Vector3(minPx - margin, ceilZ, minPy - margin),
-  new THREE.Vector3(maxPx + margin, ceilZ, minPy - margin),
-  new THREE.Vector3(maxPx + margin, ceilZ, maxPy + margin),
-  new THREE.Vector3(minPx - margin, ceilZ, maxPy + margin),
-  new THREE.Vector3(minPx - margin, ceilZ, minPy - margin),
-];
-scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ceilOutline),
-  new THREE.LineBasicMaterial({ color: 0x334466 })));
 
 const gw = (maxPx - minPx) + 2 * margin, gd = (maxPy - minPy) + 2 * margin;
 const GRID_SIZE = Math.max(gw, gd);
@@ -510,6 +527,89 @@ function buildWalls() {
   if (showRight) mk(rightWallX);
 }
 
+// ── Real cable mesh from full_cables.obj (toggle) ────────────────────────────
+// OBJ frame: X = room depth, Y = height (up), Z = room width (negative).
+// Maps 1:1 (metres) to the CSV frame:  position_y = objX - dOff,
+// position_x = -objZ + zOff,  height = objY.  Offsets derived from the bboxes.
+const OBJ_URL = 'full_cables.obj';
+const objGroup = new THREE.Group();
+objGroup.name = 'fullCablesObj';
+objGroup.visible = false;
+objGroup.renderOrder = 4;
+scene.add(objGroup);
+let objLoadState = 'idle';
+
+function setObjStatus(text, color) {
+  const el = document.getElementById('objStatusHint');
+  if (el) { el.textContent = text; if (color) el.style.color = color; }
+}
+
+// objGroup holds pre-mirror coords (x = position_x); the mirror is applied via
+// a reflection of the whole group so it tracks the Mirror-X toggle for free.
+function updateObjMirror() {
+  if (mirrorX) { objGroup.scale.x = -1; objGroup.position.x = minPx + maxPx; }
+  else { objGroup.scale.x = 1; objGroup.position.x = 0; }
+}
+
+function buildObjLineSegments(text) {
+  const vx = [], vy = [], vz = [];
+  let oMinX = Infinity, bzMax = -Infinity;
+  const rows = text.split('\n');
+  for (const ln of rows) {
+    if (ln.charCodeAt(0) === 118 && ln.charCodeAt(1) === 32) { // 'v '
+      const p = ln.split(/\s+/);
+      const x = +p[1], y = +p[2], z = +p[3];
+      vx.push(x); vy.push(y); vz.push(z);
+      if (x < oMinX) oMinX = x;
+      if (y > 0.05 && y < 3.05 && z > bzMax) bzMax = z; // bulb-tip extent only
+    }
+  }
+  const dOff = oMinX - minPy;
+  const zOff = minPx + bzMax;
+  // Width (X) maps directly (verified) so it tracks the Mirror-X toggle with the
+  // point cloud. Depth (Z) is reversed about the layout centre to match the room
+  // layout (the "180°" the OBJ needed only applied to the depth axis).
+  const sumZ = minPy + maxPy;
+  const csvX = i => -vz[i] + zOff;            // width (matches CSV/points + mirror)
+  const csvZ = i => sumZ - (vx[i] - dOff);    // depth (reversed to match layout)
+  const pos = [];
+  let segCount = 0;
+  for (const ln of rows) {
+    if (ln.charCodeAt(0) === 108 && ln.charCodeAt(1) === 32) { // 'l '
+      const idx = ln.split(/\s+/).slice(1).map(s => parseInt(s, 10)).filter(n => n > 0);
+      for (let k = 0; k < idx.length - 1; k++) {
+        const a = idx[k] - 1, b = idx[k + 1] - 1;
+        pos.push(csvX(a), vy[a], csvZ(a));
+        pos.push(csvX(b), vy[b], csvZ(b));
+        segCount++;
+      }
+    }
+  }
+  return { positions: new Float32Array(pos), vertCount: vx.length, segCount };
+}
+
+async function loadObjOnce() {
+  if (objLoadState === 'loaded' || objLoadState === 'loading') return;
+  objLoadState = 'loading';
+  setObjStatus(`loading ${OBJ_URL}…`, '#aa8');
+  try {
+    const res = await fetch(OBJ_URL);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    const built = buildObjLineSegments(text);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(built.positions, 3));
+    const mat = new THREE.LineBasicMaterial({ color: 0xff9e3d, transparent: true, opacity: 0.55, depthWrite: false });
+    objGroup.add(new THREE.LineSegments(geo, mat));
+    updateObjMirror();
+    objLoadState = 'loaded';
+    setObjStatus(`loaded · ${built.vertCount} verts · ${built.segCount} segments`, '#9c9');
+  } catch (err) {
+    objLoadState = 'error';
+    setObjStatus(`failed: ${err && err.message ? err.message : err}`, '#c66');
+  }
+}
+
 // ── Room dimension markers (toggle) ──────────────────────────────────────────
 const roomDimGroup = new THREE.Group();
 roomDimGroup.name = 'roomDims';
@@ -518,15 +618,28 @@ scene.add(roomDimGroup);
 // floor-level scene point for a CSV (x, y) ground position
 function floorPt(cxv, cyv, h = 0) { const v = csvToScene(cxv, cyv, h); v.y = h + 0.02; return v; }
 
-function addDim(a, b, text, css, tickDir) {
-  const col = new THREE.Color(css);
-  const mat = () => new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.95, depthTest: false });
-  const mkLine = (p, q) => { const o = new THREE.Line(new THREE.BufferGeometry().setFromPoints([p, q]), mat()); o.renderOrder = 30; roomDimGroup.add(o); };
-  mkLine(a, b);
+// Fat (2 px) lines for dimension markers — LineMaterial needs screen resolution
+const fatMats = [];
+function fatLine(points, css, widthPx = 2, opacity = 0.95) {
+  const g = new LineGeometry();
+  const arr = [];
+  for (const p of points) arr.push(p.x, p.y, p.z);
+  g.setPositions(arr);
+  const m = new LineMaterial({ color: new THREE.Color(css).getHex(), linewidth: widthPx, transparent: true, opacity, depthTest: false });
+  m.resolution.set(innerWidth, innerHeight);
+  fatMats.push(m);
+  const line = new Line2(g, m);
+  line.computeLineDistances();
+  line.renderOrder = 30;
+  return line;
+}
+
+function addDim(a, b, text, css, tickDir, labelOff) {
+  roomDimGroup.add(fatLine([a, b], css, 2));
   if (tickDir) {
     const t = tickDir.clone().setLength(0.12);
-    mkLine(a.clone().add(t), a.clone().sub(t));
-    mkLine(b.clone().add(t), b.clone().sub(t));
+    roomDimGroup.add(fatLine([a.clone().add(t), a.clone().sub(t)], css, 2));
+    roomDimGroup.add(fatLine([b.clone().add(t), b.clone().sub(t)], css, 2));
   }
   const div = document.createElement('div');
   div.className = 'dim-label';
@@ -535,26 +648,25 @@ function addDim(a, b, text, css, tickDir) {
   div.textContent = text;
   const lo = new CSS2DObject(div);
   lo.position.copy(a.clone().add(b).multiplyScalar(0.5));
+  if (labelOff) lo.position.add(labelOff);
   roomDimGroup.add(lo);
 }
 
 function buildRoomDims() {
   clearGroup(roomDimGroup);
+  fatMats.length = 0;
   if (!showRoomDims) return;
-  const EX = new THREE.Vector3(1, 0, 0), EY = new THREE.Vector3(0, 1, 0), EZ = new THREE.Vector3(0, 0, 1);
+  const EX = new THREE.Vector3(1, 0, 0), EZ = new THREE.Vector3(0, 0, 1);
   const width = rightWallX - leftWallX;
   const depth = maxPy - minPy;
   const frontY = minPy - 0.7;
   const sideX = leftWallX - 0.5;
 
   // Room footprint rectangle on the floor (walls × depth extent)
-  const corners = [
+  roomDimGroup.add(fatLine([
     floorPt(leftWallX, minPy), floorPt(rightWallX, minPy),
     floorPt(rightWallX, maxPy), floorPt(leftWallX, maxPy), floorPt(leftWallX, minPy),
-  ];
-  const fp = new THREE.Line(new THREE.BufferGeometry().setFromPoints(corners),
-    new THREE.LineBasicMaterial({ color: 0x44627f, transparent: true, opacity: 0.6 }));
-  roomDimGroup.add(fp);
+  ], '#44627f', 2, 0.6));
 
   // Width (X, wall to wall) along the front edge
   addDim(floorPt(leftWallX, frontY), floorPt(rightWallX, frontY), `width ${width.toFixed(2)} m`, '#9fd0ff', EZ);
@@ -562,9 +674,10 @@ function buildRoomDims() {
   addDim(floorPt(sideX, minPy), floorPt(sideX, maxPy), `depth ${depth.toFixed(2)} m`, '#9fd0ff', EX);
   // Height (floor → ceiling) at the front-left corner
   addDim(csvToScene(leftWallX, frontY, 0), csvToScene(leftWallX, frontY, ROOM_HEIGHT), `height ${ROOM_HEIGHT.toFixed(2)} m`, '#aaff88', EX);
-  // 0.25 m wall offsets at the two reference bulbs
-  addDim(floorPt(leftRefX, leftRefY), floorPt(leftWallX, leftRefY), `${WALL_OFFSET.toFixed(3)} m`, '#ffcc66', EZ);
-  addDim(floorPt(rightRefX, rightRefY), floorPt(rightWallX, rightRefY), `${WALL_OFFSET.toFixed(3)} m`, '#ffcc66', EZ);
+  // 0.25 m wall offsets at the two reference bulbs — drawn at ceiling height;
+  // label lifted up and pushed along the depth axis so it clears the short line
+  addDim(csvToScene(leftRefX, leftRefY, leftRefZ), csvToScene(leftWallX, leftRefY, leftRefZ), `${WALL_OFFSET.toFixed(3)} m`, '#ffcc66', EZ, new THREE.Vector3(0, 0.45, 0.4));
+  addDim(csvToScene(rightRefX, rightRefY, rightRefZ), csvToScene(rightWallX, rightRefY, rightRefZ), `${WALL_OFFSET.toFixed(3)} m`, '#ffcc66', EZ, new THREE.Vector3(0, 0.45, 0.4));
 }
 
 // ── Legend ────────────────────────────────────────────────────────────────────
@@ -607,12 +720,48 @@ document.getElementById('colorMode').addEventListener('change', e => { colorMode
 document.getElementById('ptSize').addEventListener('input', e => { ptMat.size = parseFloat(e.target.value) * 0.02; });
 document.getElementById('lineOp').addEventListener('input', e => { lineMat.opacity = parseFloat(e.target.value) / 100; });
 document.getElementById('floorInt').addEventListener('input', e => { setFloorIntensity(parseFloat(e.target.value) / 100); });
-document.getElementById('mirrorX').addEventListener('change', e => { mirrorX = e.target.checked; refresh(); buildOverlays(); });
+document.getElementById('mirrorX').addEventListener('change', e => { mirrorX = e.target.checked; refresh(); buildOverlays(); updateObjMirror(); });
 document.getElementById('showGizmo').addEventListener('change', e => { showGizmo = e.target.checked; buildOverlays(); });
 document.getElementById('cableRun').addEventListener('change', e => { cableRunMode = e.target.value; refresh(); });
 document.getElementById('showHomerun').addEventListener('change', e => { showHomerun = e.target.checked; refresh(); });
 document.getElementById('showRoomDims').addEventListener('change', e => { showRoomDims = e.target.checked; buildRoomDims(); });
+document.getElementById('showObj').addEventListener('change', async e => {
+  const want = e.target.checked;
+  if (want && objLoadState === 'idle') await loadObjOnce();
+  objGroup.visible = want && objLoadState === 'loaded';
+});
 rowFilter.addEventListener('input', e => { selectedLineIdx = parseInt(e.target.value, 10); updateRowFilterHint(); refresh(); });
+
+// ── Persist control state to localStorage ───────────────────────────────────
+const SETTINGS_KEY = 'georgetown-pulse-viz-settings';
+const PERSIST_IDS = ['colorMode', 'ptSize', 'lineOp', 'floorInt', 'rowFilter',
+  'mirrorX', 'showGizmo', 'cableRun', 'showHomerun', 'showRoomDims', 'showObj'];
+function saveSettings() {
+  const s = {};
+  for (const id of PERSIST_IDS) {
+    const el = document.getElementById(id);
+    if (el) s[id] = el.type === 'checkbox' ? el.checked : el.value;
+  }
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  const hint = document.getElementById('saveHint');
+  hint.textContent = 'saved \u2713';
+  clearTimeout(saveSettings._t);
+  saveSettings._t = setTimeout(() => { hint.textContent = ''; }, 1600);
+}
+function loadSettings() {
+  let s; try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); } catch { s = null; }
+  if (!s) return;
+  for (const id of PERSIST_IDS) {
+    if (!(id in s)) continue;
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.type === 'checkbox') el.checked = s[id];
+    else el.value = s[id];
+    el.dispatchEvent(new Event(el.type === 'range' ? 'input' : 'change'));
+  }
+}
+document.getElementById('saveSettings').addEventListener('click', saveSettings);
+loadSettings();
 
 // ── Hover ─────────────────────────────────────────────────────────────────────
 const raycaster = new THREE.Raycaster();
@@ -676,6 +825,7 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
   labelRenderer.setSize(innerWidth, innerHeight);
+  for (const m of fatMats) m.resolution.set(innerWidth, innerHeight);
 });
 
 function animate() {
@@ -695,7 +845,8 @@ function animate() {
         `drop ${d.drop.toFixed(3)} m (from ceiling)  ->  ${bulbY(d).toFixed(3)} m above floor\n` +
         `total cable ${d.cable.toFixed(3)} m (from CSV)` +
         (cableRunMode !== 'off'
-          ? `\nhomerun to ${cableRunSide(d)} wall ${cableRunLen(d).toFixed(3)} m  (generated)`
+          ? `\ndistance to wall ${cableRunHomerun(d).toFixed(3)} m  (generated)` +
+            `\ndrop ${d.drop.toFixed(3)} + wall ${cableRunHoriz(d).toFixed(3)} + floor ${ROOM_HEIGHT.toFixed(2)} = ${(d.drop + cableRunHoriz(d) + ROOM_HEIGHT).toFixed(3)} m`
           : '');
     }
     highlight.position.set(sceneX(d.px), bulbY(d), d.py);
