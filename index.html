@@ -284,15 +284,15 @@ const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: t
 const dropLines = new THREE.LineSegments(lineGeo, lineMat);
 scene.add(dropLines);
 
-// Generated homerun cables to a side wall — tapered ribbons (wide at the bulb,
-// narrowing to the wall) so the run direction reads clearly. Orange.
+// Generated homerun cables to a side wall — tapered ribbons (thin at the bulb,
+// thickening toward the wall) so the run direction reads clearly. Orange.
 const runGeo = new THREE.BufferGeometry();
 const runMat = new THREE.MeshBasicMaterial({ color: 0xffaa44, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false });
 const runLines = new THREE.Mesh(runGeo, runMat);
 runLines.visible = false;
 scene.add(runLines);
-const HOMERUN_W_START = 0.028; // half-width at the bulb end (m)
-const HOMERUN_W_END = 0.003;   // half-width at the wall end (m)
+const HOMERUN_W_START = 0.003; // half-width at the bulb end (m) — thin
+const HOMERUN_W_END = 0.028;   // half-width at the wall end (m) — thick (grows toward wall)
 
 const n = RAW.length;
 // -1 = show all lines; otherwise index into sorted `lines`
@@ -331,7 +331,7 @@ function rebuild() {
     lcol[j*6]   = c.r*0.25; lcol[j*6+1] = c.g*0.25; lcol[j*6+2] = c.b*0.25;
     lcol[j*6+3] = c.r; lcol[j*6+4] = c.g; lcol[j*6+5] = c.b;
     // generated homerun cable: tapered ribbon along X at ceiling height,
-    // wide at the bulb (sx) narrowing to the wall (wx), spread along py (scene z)
+    // thin at the bulb (sx) thickening toward the wall (wx), spread along py (scene z)
     if (runOn) {
       const wx = sceneX(wallTargetX(d));
       const z = d.py, ws = HOMERUN_W_START, we = HOMERUN_W_END;
@@ -512,7 +512,7 @@ function buildLegend(mode) {
       `<div class="legend-row"><div class="legend-dot" style="background:${'#' + categColor(universes.indexOf(u), universes.length).getHexString()}"></div> U${u}</div>`).join('') + '</div>';
   }
   if (cableRunMode !== 'off' && showHomerun) {
-    h += `<div style="margin-top:10px;color:#ffaa44">▸ homerun cables (${cableRunMode}) · taper points to wall</div>`;
+    h += `<div style="margin-top:10px;color:#ffaa44">▸ homerun cables (${cableRunMode}) · thickens toward wall</div>`;
   }
   el.innerHTML = h;
 }
