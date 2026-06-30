@@ -88,6 +88,15 @@
       <input type="checkbox" id="showGizmo" checked> CSV axis cross
     </label>
   </div>
+  <div>
+    <label>Cable run to wall <span style="color:#ffaa44">(generated)</span></label><br>
+    <select id="cableRun">
+      <option value="off">Off — not in CSV</option>
+      <option value="left">All cable to left wall</option>
+      <option value="right">All cable to right wall</option>
+      <option value="split">Split at middle (nearest wall)</option>
+    </select>
+  </div>
   <div class="hint">
     <b>Pulse Topology</b> — hanging bulbs.<br>
     Each bulb drops <code>BulbCables</code> m below its ceiling mount.<br>
@@ -191,6 +200,28 @@ const lines = [...new Set(RAW.map(d => d.line))].sort((a, b) => a - b);
 const cx = (minPx + maxPx) / 2, cz = (minPy + maxPy) / 2;
 const cyMid = (minBulbY + maxBulbY) / 2;
 
+// ── Cable run to wall (generated live; not in CSV) ───────────────────────────
+// The CSV has no horizontal cable run, so route each bulb's ceiling cable to a
+// side wall along X. 'left' = all to -X wall, 'right' = all to +X wall,
+// 'split' = nearest of the two (mounts left of centre go left, the rest right).
+let cableRunMode = 'off';
+const wallPad = 0.4;
+const leftWallX = minPx - wallPad;
+const rightWallX = maxPx + wallPad;
+function wallTargetX(d) {
+  if (cableRunMode === 'left') return leftWallX;
+  if (cableRunMode === 'right') return rightWallX;
+  if (cableRunMode === 'split') return d.px <= cx ? leftWallX : rightWallX;
+  return d.px;
+}
+function cableRunSide(d) {
+  if (cableRunMode === 'left') return 'left';
+  if (cableRunMode === 'right') return 'right';
+  if (cableRunMode === 'split') return d.px <= cx ? 'left' : 'right';
+  return '';
+}
+function cableRunLen(d) { return Math.abs(d.px - wallTargetX(d)); }
+
 // ── Renderers ────────────────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(devicePixelRatio);
@@ -247,6 +278,13 @@ const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: t
 const dropLines = new THREE.LineSegments(lineGeo, lineMat);
 scene.add(dropLines);
 
+// Generated ceiling cable runs to a side wall (orange)
+const runGeo = new THREE.BufferGeometry();
+const runMat = new THREE.LineBasicMaterial({ color: 0xffaa44, transparent: true, opacity: 0.5 });
+const runLines = new THREE.LineSegments(runGeo, runMat);
+runLines.visible = false;
+scene.add(runLines);
+
 const n = RAW.length;
 // -1 = show all lines; otherwise index into sorted `lines`
 let selectedLineIdx = -1;
@@ -269,6 +307,8 @@ function rebuild() {
   const col = new Float32Array(cap * 3);
   const lpos = new Float32Array(cap * 6);
   const lcol = new Float32Array(cap * 6);
+  const runOn = cableRunMode !== 'off';
+  const rpos = new Float32Array(cap * 6);
   for (let j = 0; j < m; j++) {
     const d = RAW[vis[j]];
     const by = bulbY(d), cyy = ceilY(d);
@@ -281,7 +321,16 @@ function rebuild() {
     lpos[j*6+3] = sx; lpos[j*6+4] = by;  lpos[j*6+5] = d.py;
     lcol[j*6]   = c.r*0.25; lcol[j*6+1] = c.g*0.25; lcol[j*6+2] = c.b*0.25;
     lcol[j*6+3] = c.r; lcol[j*6+4] = c.g; lcol[j*6+5] = c.b;
+    // generated cable run to wall along X at ceiling height
+    if (runOn) {
+      const wx = sceneX(wallTargetX(d));
+      rpos[j*6]   = sx; rpos[j*6+1] = cyy; rpos[j*6+2] = d.py;
+      rpos[j*6+3] = wx; rpos[j*6+4] = cyy; rpos[j*6+5] = d.py;
+    }
   }
+  runGeo.deleteAttribute('position');
+  runGeo.setAttribute('position', new THREE.BufferAttribute(rpos.subarray(0, cap*6), 3));
+  runLines.visible = runOn && m > 0;
   ptGeo.deleteAttribute('position'); ptGeo.deleteAttribute('color');
   ptGeo.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, cap*3), 3));
   ptGeo.setAttribute('color', new THREE.BufferAttribute(col.subarray(0, cap*3), 3));
@@ -407,6 +456,27 @@ function buildOverlays() {
   addOverlayLabel(ent, 'Entrance', '#d4d4c8', '#786');
 }
 
+// ── Wall reference lines for generated cable runs ────────────────────────────
+const wallGroup = new THREE.Group();
+wallGroup.name = 'cableRunWalls';
+scene.add(wallGroup);
+function buildWalls() {
+  clearGroup(wallGroup);
+  if (cableRunMode === 'off') return;
+  const showLeft = cableRunMode === 'left' || cableRunMode === 'split';
+  const showRight = cableRunMode === 'right' || cableRunMode === 'split';
+  const mk = (wx) => {
+    const pts = [
+      new THREE.Vector3(sceneX(wx), ceilZ, minPy - 0.3),
+      new THREE.Vector3(sceneX(wx), ceilZ, maxPy + 0.3),
+    ];
+    wallGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({ color: 0xffaa44, transparent: true, opacity: 0.55 })));
+  };
+  if (showLeft) mk(leftWallX);
+  if (showRight) mk(rightWallX);
+}
+
 // ── Legend ────────────────────────────────────────────────────────────────────
 function buildLegend(mode) {
   const el = document.getElementById('legend');
@@ -423,10 +493,13 @@ function buildLegend(mode) {
     h += '<div style="margin-top:10px">' + universes.map(u =>
       `<div class="legend-row"><div class="legend-dot" style="background:${'#' + categColor(universes.indexOf(u), universes.length).getHexString()}"></div> U${u}</div>`).join('') + '</div>';
   }
+  if (cableRunMode !== 'off') {
+    h += `<div style="margin-top:10px;color:#ffaa44">— cable run to wall (${cableRunMode})</div>`;
+  }
   el.innerHTML = h;
 }
 
-function refresh() { rebuild(); buildLegend(colorMode); }
+function refresh() { rebuild(); buildWalls(); buildLegend(colorMode); }
 refresh();
 buildOverlays();
 
@@ -446,6 +519,7 @@ document.getElementById('lineOp').addEventListener('input', e => { lineMat.opaci
 document.getElementById('floorInt').addEventListener('input', e => { setFloorIntensity(parseFloat(e.target.value) / 100); });
 document.getElementById('mirrorX').addEventListener('change', e => { mirrorX = e.target.checked; refresh(); buildOverlays(); });
 document.getElementById('showGizmo').addEventListener('change', e => { showGizmo = e.target.checked; buildOverlays(); });
+document.getElementById('cableRun').addEventListener('change', e => { cableRunMode = e.target.value; refresh(); });
 rowFilter.addEventListener('input', e => { selectedLineIdx = parseInt(e.target.value, 10); updateRowFilterHint(); refresh(); });
 
 // ── Hover ─────────────────────────────────────────────────────────────────────
@@ -527,7 +601,10 @@ function animate() {
         `ID ${d.id}   Line ${d.line}   Universe ${d.universe}\n` +
         `mount (x ${d.px.toFixed(3)}, y ${d.py.toFixed(3)}, z ${d.pz.toFixed(3)})\n` +
         `drop ${d.drop.toFixed(3)} m  ->  bulb height ${bulbY(d).toFixed(3)} m\n` +
-        `total cable ${d.cable.toFixed(3)} m`;
+        `total cable ${d.cable.toFixed(3)} m` +
+        (cableRunMode !== 'off'
+          ? `\ncable run to ${cableRunSide(d)} wall ${cableRunLen(d).toFixed(3)} m  (generated)`
+          : '');
     }
     highlight.position.set(sceneX(d.px), bulbY(d), d.py);
     highlight.visible = true;
